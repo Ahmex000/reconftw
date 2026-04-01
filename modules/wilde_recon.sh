@@ -551,6 +551,10 @@ function wilde_mode() {
     fi
 
     notification "Wilde Mode Complete: ${end_count} subdomains (${new_count} new)" good
+
+    # Automatically proceed to URL collection after subdomain enum
+    notification "Wilde Mode: proceeding to URL collection" info
+    url_mode
 }
 
 # URL mode - comprehensive URL collection
