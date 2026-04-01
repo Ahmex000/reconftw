@@ -57,6 +57,75 @@ reconFTW leverages a wide range of techniques, including passive and active subd
 
 ---
 
+## 🆕 Y-Recon Integration (Fork Enhancements)
+
+This fork merges **Y-Recon** tools and methodology into reconFTW, adding three specialized reconnaissance modes selectable via `--mode`:
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| **Open** | `--mode open` or `-O` | Horizontal company-wide asset discovery (TLDs, ASNs, CIDRs, IPs, vhosts, cloud) |
+| **Wilde** | `--mode wilde` or `-W` | Comprehensive subdomain enumeration with 15+ tools + fuzzing |
+| **URL** | `--mode url` or `-U` | Full URL collection pipeline with crawlers, passive sources, and param discovery |
+
+### Open Mode (`--mode open`)
+Performs horizontal reconnaissance to discover all assets owned by a company:
+1. **TLD Collection** — crt.sh certificate transparency + amass reverse-WHOIS
+2. **ASN Discovery** — asnmap + Shodan API → extracts ASNs for all domains
+3. **CIDR Extraction** — whois.radb.net + asnmap → converts ASNs to IP ranges
+4. **IP Expansion** — dnsx/zdns resolution + mapcidr CIDR expansion + Shodan reverse IP
+5. **Virtual Host Fuzzing** — ffuf vhost fuzzing in tmux windows (runs per-domain)
+6. **Cloud Assets** — cloud_enum + s3scanner for S3/GCS/Azure bucket discovery
+7. **Subdomain Enum** — runs full Wilde mode on all discovered TLDs
+8. **Summary** — generates `open/summary.txt` + Discord notification
+
+**Additional new tools in Open mode:** `zdns`, `cloud_enum`, `s3scanner`, `hosthunter`
+
+### Wilde Mode (`--mode wilde`)
+Runs all subdomain enumeration tools in parallel groups of 3:
+
+| Group | Tools |
+|-------|-------|
+| Group 1 | subfinder, crt.sh, VirusTotal |
+| Group 2 | subenum, findomain, assetfinder |
+| Group 3 | sublist3r, shodan-cli, chaos |
+| Group 4 | securitytrails, urlscan, github-subdomains |
+| Group 5 | gitlab-subdomains, shuffledns, google-analytics |
+| Group 6 | amass, DNS records, TLS, permutations, brute-force |
+
+After subdomain enum: httpx live check → naabu port scan → nuclei scan (tmux) → takeover check → IIS shortname scan → subdomain fuzzing (ffuf in tmux) → adds target to background monitoring queue.
+
+**New tools added:** `findomain`, `assetfinder`, `sublist3r`, `subenum`, `shodan-cli`, `chaos`, `shuffledns`, `github-subdomains`, `gitlab-subdomains`
+
+### URL Mode (`--mode url`)
+Collects all URLs in parallel groups of 2:
+
+| Group | Tools |
+|-------|-------|
+| Group 1 | gau, waymore |
+| Group 2 | katana, gospider |
+| Group 3 | paramspider, urlscan-urls |
+
+Then: httpx live filter → split by extension (js/php/json/docs) → GF pattern matching → JS analysis → saves 500-line CSV chunks to `scanner/`.
+
+### New Features
+
+- **Discord Notifications** — set `DISCORD_WEBHOOK` in config or environment to receive alerts on new subdomains, scan completion, and open mode summaries
+- **Background Subdomain Monitoring** — after wilde/open scan completes, target is added to a queue; `run_monitor_queue` checks for new subdomains every `MONITOR_INTERVAL_MIN` minutes (default: 60)
+- **Scanner Output** — subdomains and URLs saved to `<domain>/scanner/` as 500-line CSV chunks with `target,item` format
+- **Subdomain Fuzzing** — `sub_fuzz_tmux()` runs ffuf in a new tmux window for subdomain discovery
+- **3-Tools Parallel Groups** — wilde mode runs tools in groups of 3 simultaneously using the existing parallel framework
+
+### New API Keys (set in `secrets.cfg` or environment)
+
+```bash
+VT_API_KEY=""                  # VirusTotal API key
+CHAOS_API_KEY=""               # ProjectDiscovery Chaos API key
+SECURITYTRAILS_API_KEY=""      # SecurityTrails API key
+DISCORD_WEBHOOK=""             # Discord webhook URL for notifications
+```
+
+---
+
 ## 📔 Table of Contents
 
 - [📔 Table of Contents](#-table-of-contents)
@@ -872,6 +941,31 @@ reconFTW supports multiple modes and options for flexible reconnaissance. Use th
 | `-z` | **Zen**: Lightweight recon with basic checks and some vulnerabilities |
 | `-c` | **Custom**: Run a specific function (requires additional arguments)   |
 | `-h` | Show help menu                                                        |
+
+#### Y-Recon Modes (new in this fork)
+
+| Flag | Long Flag | Description |
+| ---- | --------- | ----------- |
+| `-O` | `--mode open` | **Open Mode**: Horizontal company asset discovery (TLDs → ASNs → CIDRs → IPs → vhosts → cloud → subdomains) |
+| `-W` | `--mode wilde` | **Wilde Mode**: Comprehensive subdomain enumeration with 15+ tools in parallel groups of 3 |
+| `-U` | `--mode url` | **URL Mode**: Full URL collection (gau + waymore + katana + gospider + paramspider + urlscan) |
+
+**Examples:**
+```bash
+# Open mode - discover all company assets
+./reconftw.sh -d company.com -O
+
+# Wilde mode - exhaust all subdomain enumeration
+./reconftw.sh -d target.com -W
+
+# URL mode - collect all URLs (requires prior subdomain scan)
+./reconftw.sh -d target.com -U
+
+# Using long flags
+./reconftw.sh -d target.com --mode open
+./reconftw.sh -d target.com --mode wilde
+./reconftw.sh -d target.com --mode url
+```
 
 ### General Options
 

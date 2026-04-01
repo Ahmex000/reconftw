@@ -91,6 +91,8 @@ source "${_INIT_SCRIPTPATH}/modules/web.sh"
 source "${_INIT_SCRIPTPATH}/modules/vulns.sh"
 source "${_INIT_SCRIPTPATH}/modules/axiom.sh"
 source "${_INIT_SCRIPTPATH}/modules/modes.sh"
+source "${_INIT_SCRIPTPATH}/modules/wilde_recon.sh"
+source "${_INIT_SCRIPTPATH}/modules/open_recon.sh"
 
 # Normalize legacy-friendly AXIOM syntax:
 #   -v 20  -> -v --vps-count 20
@@ -156,7 +158,7 @@ fi
 
 CLI_ARGS=()
 mapfile -d '' -t CLI_ARGS < <(normalize_vps_count_args "$@")
-PROGARGS=$(getopt -o 'd:m:l:x:i:o:f:q:c:zrspanwvyh' --long 'domain:,list:,recon,subdomains,passive,all,web,osint,zen,deep,help,vps,vps-count:,ai,check-tools,health-check,quick-rescan,incremental,adaptive-rate,dry-run,parallel,no-parallel,monitor,monitor-interval:,monitor-cycles:,refresh-cache,gen-resolvers,force,export:,report-only,no-report,parallel-log:,quiet,verbose,no-color,log-format:,show-cache,banner,no-banner,legal' -n 'reconFTW' -- "${CLI_ARGS[@]}")
+PROGARGS=$(getopt -o 'd:m:l:x:i:o:f:q:c:zrspanwvyhOWU' --long 'domain:,list:,recon,subdomains,passive,all,web,osint,zen,deep,help,vps,vps-count:,ai,check-tools,health-check,quick-rescan,incremental,adaptive-rate,dry-run,parallel,no-parallel,monitor,monitor-interval:,monitor-cycles:,refresh-cache,gen-resolvers,force,export:,report-only,no-report,parallel-log:,quiet,verbose,no-color,log-format:,show-cache,banner,no-banner,legal,mode:' -n 'reconFTW' -- "${CLI_ARGS[@]}")
 
 exit_status=$?
 if [[ $exit_status -ne 0 ]]; then
@@ -344,6 +346,30 @@ while true; do
             ;;
         '--deep')
             opt_deep=true
+            shift
+            continue
+            ;;
+        '--mode')
+            opt_recon_mode="$2"
+            if [[ ! "$opt_recon_mode" =~ ^(open|wilde|url)$ ]]; then
+                print_errorf "Invalid --mode value '%s' (allowed: open|wilde|url)" "$opt_recon_mode"
+                exit 1
+            fi
+            shift 2
+            continue
+            ;;
+        '-O')
+            opt_recon_mode="open"
+            shift
+            continue
+            ;;
+        '-W')
+            opt_recon_mode="wilde"
+            shift
+            continue
+            ;;
+        '-U')
+            opt_recon_mode="url"
             shift
             continue
             ;;
@@ -693,6 +719,11 @@ if [[ "${MONITOR_MODE:-false}" == "true" ]]; then
     exit
 fi
 
+# Map --mode / -O / -W / -U into opt_mode for dispatch
+if [[ -n "${opt_recon_mode:-}" ]]; then
+    opt_mode="${opt_recon_mode}"
+fi
+
 case $opt_mode in
     'r')
         if [[ -n $multi ]]; then
@@ -842,6 +873,54 @@ case $opt_mode in
             }
         fi
         exit
+        ;;
+    'open'|'O')
+        if [[ -n $list ]]; then
+            sed_i 's/\r$//' "$flist"
+            while IFS= read -r domain <&3 || [[ -n "$domain" ]]; do
+                [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
+                start
+                open_recon_mode
+                end
+            done 3<"$flist"
+        else
+            start
+            open_recon_mode
+            end
+        fi
+        ;;
+    'wilde'|'W')
+        if [[ -n $list ]]; then
+            sed_i 's/\r$//' "$flist"
+            while IFS= read -r domain <&3 || [[ -n "$domain" ]]; do
+                [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
+                start
+                wilde_mode
+                end
+            done 3<"$flist"
+        else
+            start
+            wilde_mode
+            end
+        fi
+        ;;
+    'url'|'u'|'U')
+        if [[ -n $list ]]; then
+            sed_i 's/\r$//' "$flist"
+            while IFS= read -r domain <&3 || [[ -n "$domain" ]]; do
+                [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
+                start
+                url_mode
+                end
+            done 3<"$flist"
+        else
+            start
+            url_mode
+            end
+        fi
         ;;
         # No mode selected.  EXIT!
     *)

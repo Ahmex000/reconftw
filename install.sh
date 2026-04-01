@@ -292,6 +292,9 @@ declare -A gotools=(
     ["ffuf"]="github.com/ffuf/ffuf/v2"
     ["github-subdomains"]="github.com/gwen001/github-subdomains"
     ["gitlab-subdomains"]="github.com/gwen001/gitlab-subdomains"
+    ["assetfinder"]="github.com/tomnomnom/assetfinder"
+    ["shuffledns"]="github.com/projectdiscovery/shuffledns/cmd/shuffledns"
+    ["zdns"]="github.com/zmap/zdns/cmd/zdns"
     ["nuclei"]="github.com/projectdiscovery/nuclei/v3/cmd/nuclei"
     ["anew"]="github.com/tomnomnom/anew"
     ["notify"]="github.com/projectdiscovery/notify/cmd/notify"
@@ -365,6 +368,7 @@ declare -A pipxtools=(
     ["gqlspection"]="doyensec/GQLSpection"
     ["postleaksNg"]="six2dez/postleaksNG"
     ["cewler"]="roys/cewler"
+    ["sublist3r"]="aboul3la/Sublist3r"
 )
 
 # Declare repositories and their paths
@@ -1146,6 +1150,7 @@ function initial_setup() {
 	        ["trusted_resolvers"]="https://gist.githubusercontent.com/six2dez/ae9ed7e5c786461868abd3f2344401b6/raw ${resolvers_trusted}"
 	        ["resolvers"]="https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt ${resolvers}"
 	        ["axiom_config"]="https://gist.githubusercontent.com/six2dez/6e2d9f4932fd38d84610eb851014b26e/raw ${tools}/axiom_config.sh"
+	        ["findomain"]="https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip /tmp/findomain-linux.zip"
 	    )
 
     local dl_step=0
@@ -1171,6 +1176,17 @@ function initial_setup() {
             continue
         fi
     done
+
+    # Extract and install findomain binary if downloaded
+    if [[ -f /tmp/findomain-linux.zip ]]; then
+        unzip -o /tmp/findomain-linux.zip -d /tmp/findomain_extract &>/dev/null || true
+        if [[ -f /tmp/findomain_extract/findomain-linux ]]; then
+            chmod +x /tmp/findomain_extract/findomain-linux
+            $SUDO mv /tmp/findomain_extract/findomain-linux /usr/local/bin/findomain 2>/dev/null || \
+                mv /tmp/findomain_extract/findomain-linux "${tools}/findomain" 2>/dev/null || true
+        fi
+        rm -rf /tmp/findomain-linux.zip /tmp/findomain_extract 2>/dev/null || true
+    fi
 
     # (removed) kiterunner routes tarball handling
 
