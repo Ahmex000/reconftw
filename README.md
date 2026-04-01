@@ -296,49 +296,457 @@ reconFTW is packed with features to make reconnaissance thorough and efficient. 
 
 ## 🏗️ Architecture
 
-reconFTW uses a modular architecture. The main entry point (`reconftw.sh`) handles argument parsing and sources 8 specialized modules from the `modules/` directory.
+reconFTW uses a modular architecture. The main entry point (`reconftw.sh`) handles argument parsing and sources 10 specialized modules. Three Y-Recon modes (`open`, `wilde`, `url`) form a pipeline where each mode feeds its output directly into the next.
 
-### Directory Layout
+---
+
+### 📁 Repository Layout
 
 ```
 reconftw/
-├── reconftw.sh          # Entry point — arg parsing, module loading, dispatch
-├── reconftw.cfg         # Default configuration
-├── install.sh           # Installer
-├── Makefile             # Data management, lint, fmt, test targets
-├── modules/
-│   ├── core.sh          # Lifecycle, logging, notifications, cleanup (1024 lines)
-│   ├── modes.sh         # Scan modes, argument parsing, help (902 lines)
-│   ├── subdomains.sh    # Subdomain enumeration (1938 lines)
-│   ├── web.sh           # Web analysis, fuzzing, JS checks (1712 lines)
-│   ├── vulns.sh         # Vulnerability scanning (926 lines)
-│   ├── osint.sh         # OSINT functions (500 lines)
-│   ├── axiom.sh         # Axiom/Ax fleet helpers (143 lines)
-│   └── utils.sh         # Utilities, sanitization, validation (508 lines)
+│
+├── reconftw.sh              # Entry point: arg parsing, module loading, mode dispatch
+├── reconftw.cfg             # All default configuration & API key stubs
+├── secrets.cfg.example      # Template for API keys (gitignored when filled)
+├── install.sh               # Installer: Go tools, Python tools, git repos, binaries
+├── Makefile                 # lint, fmt, test, sync-upstream targets
+├── MODES.md                 # Detailed Y-Recon mode documentation
+├── CHANGELOG.md
+│
+├── modules/                 # Sourced by reconftw.sh at startup
+│   ├── core.sh              # Lifecycle, structured logging, reporting, notifications (2284 lines)
+│   ├── modes.sh             # All scan-mode functions: recon/passive/osint/all/zen (1499 lines)
+│   ├── subdomains.sh        # Original reconftw subdomain enumeration (2404 lines)
+│   ├── web.sh               # Web probing, crawling, JS, fuzzing, screenshots (2726 lines)
+│   ├── vulns.sh             # Vuln scanning: XSS/SQLi/SSRF/LFI/SSTI/etc. (988 lines)
+│   ├── osint.sh             # OSINT: dorks, emails, metadata, cloud, secrets (705 lines)
+│   ├── axiom.sh             # Axiom/Ax distributed fleet helpers (240 lines)
+│   ├── utils.sh             # Sanitization, validation, perf profiles, retry (1409 lines)
+│   │
+│   ├── wilde_recon.sh       # [Y-Recon] Wilde + URL mode functions (762 lines)
+│   │   ├── sub_virustotal()          ← VirusTotal subdomain API
+│   │   ├── sub_subenum()             ← subenum (wayback/crt/abuseipdb/...)
+│   │   ├── sub_findomain()           ← findomain
+│   │   ├── sub_assetfinder()         ← assetfinder
+│   │   ├── sub_sublist3r()           ← sublist3r
+│   │   ├── sub_shodan_cli()          ← shodan CLI
+│   │   ├── sub_chaos()               ← chaos (ProjectDiscovery)
+│   │   ├── sub_securitytrails()      ← SecurityTrails API
+│   │   ├── sub_urlscan()             ← URLScan.io
+│   │   ├── sub_github_subdomains()   ← github-subdomains
+│   │   ├── sub_gitlab_subdomains()   ← gitlab-subdomains
+│   │   ├── sub_shuffledns()          ← shuffledns brute-force
+│   │   ├── sub_fuzz_tmux()           ← ffuf subdomain fuzz (new tmux window)
+│   │   ├── wilde_ip_portscan()       ← naabu + reverse DNS on resolved IPs
+│   │   ├── wilde_nuclei_scan()       ← nuclei med/high/crit (new tmux window)
+│   │   ├── wilde_takeover_check()    ← nuclei takeover templates
+│   │   ├── wilde_mode()              ← orchestrator: runs all above → calls url_mode()
+│   │   ├── url_mode()                ← URL collection pipeline
+│   │   ├── save_subdomains_to_scanner() ← writes scanner/ CSV chunks
+│   │   ├── add_to_monitor_queue()    ← queues target for background monitoring
+│   │   ├── run_monitor_queue()       ← background monitor loop
+│   │   └── discord_notify()          ← Discord webhook helper
+│   │
+│   └── open_recon.sh        # [Y-Recon] Open mode (horizontal recon) functions (355 lines)
+│       ├── open_tld_collect()        ← crt.sh TLD discovery
+│       ├── open_whois_enum()         ← amass reverse-WHOIS + whois
+│       ├── open_asn_enum()           ← asnmap + Shodan API → ASNs
+│       ├── open_asn_to_cidr()        ← whois.radb.net + asnmap → CIDRs
+│       ├── open_ip_expansion()       ← dnsx/zdns/mapcidr + Shodan reverse-IP
+│       ├── open_vhost_fuzz()         ← ffuf vhost fuzzing per TLD (tmux)
+│       ├── open_cloud_enum()         ← cloud_enum + s3scanner
+│       ├── open_consolidate()        ← merge results + summary + Discord alert
+│       └── open_recon_mode()         ← orchestrator: phases 1-7 → calls wilde_mode()
+│
+├── lib/                     # Low-level libraries (sourced before modules)
+│   ├── common.sh            # run_tool(), print helpers, grep_domain()
+│   ├── parallel.sh          # parallel_funcs(), job scheduling, ETA, progress
+│   ├── ui.sh                # TTY detection, color, live progress bars
+│   └── validation.sh        # validate_domain/ip/file/boolean/integer, sanitize_path()
+│
+├── data/
+│   ├── wordlists/
+│   │   ├── subdomains.txt.gz        # Default subdomain wordlist
+│   │   ├── fuzz_wordlist.txt        # Directory fuzzing wordlist
+│   │   ├── lfi_wordlist.txt         # LFI payloads
+│   │   ├── ssti_wordlist.txt        # SSTI payloads
+│   │   ├── permutations_list.txt    # Subdomain permutations (full)
+│   │   ├── permutations_list_short.txt
+│   │   └── headers_inject.txt       # Header injection payloads
+│   └── patterns/
+│       └── jsluice_patterns.json    # JS secret patterns
+│
+├── config/
+│   ├── tool_versions.txt            # Pinned tool versions
+│   ├── tls_ports.txt                # TLS certificate ports
+│   ├── uncommon_ports_web.txt       # Uncommon HTTP ports
+│   └── sensitive_domains.txt        # Domains excluded from scope
+│
 ├── tests/
-│   ├── run_tests.sh     # Test runner
-│   ├── unit/            # bats-core unit tests
-│   ├── integration/     # Integration tests
-│   └── fixtures/        # Test data
+│   ├── run_tests.sh
+│   ├── unit/                        # bats-core unit tests
+│   ├── integration/                 # Integration / smoke tests
+│   ├── security/                    # Injection / sanitization tests
+│   ├── mocks/                       # Offline mock binaries
+│   └── fixtures/                    # Canned test data
+│
 ├── Docker/
-│   └── Dockerfile       # Official Docker image
-└── Terraform/           # AWS deployment
+│   └── Dockerfile
+└── Terraform/               # AWS IaC deployment
 ```
 
-### Module Reference
+---
+
+### 🔄 Mode Pipeline & Data Flow
+
+The three Y-Recon modes form a strict pipeline. Each mode writes output files that the next mode reads as input — nothing is skipped or duplicated.
+
+```
+--mode open (-O)
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  OPEN MODE  (open_recon.sh)                                         │
+│                                                                     │
+│  INPUT: domain (e.g. company.com)                                   │
+│                                                                     │
+│  Phase 1 — TLD & WHOIS Discovery                                    │
+│  ├── open_tld_collect()                                             │
+│  │     tool : crt.sh API (curl + jq)                                │
+│  │     out  : open/TLD/<base>_TLD.txt        ← all related domains  │
+│  │                                                                  │
+│  ├── open_whois_enum()                                              │
+│  │     tools: amass intel --whois, whois                            │
+│  │     out  : open/TLD/<base>_TLD.txt (appended), open/whois_*.txt  │
+│  │                                                                  │
+│  Phase 2 — Network Discovery                                        │
+│  ├── open_asn_enum()                                                │
+│  │     tools: asnmap, Shodan API                                    │
+│  │     in   : open/TLD/<base>_TLD.txt                               │
+│  │     out  : open/asns/asns_asnmap.txt                             │
+│  │            open/asns/asns_shodan.txt                             │
+│  │            open/ips/ips_shodan.txt                               │
+│  │            open/ports/shodan_ports.txt                           │
+│  │            open/asns/unique_asns.txt      ← consolidated         │
+│  │                                                                  │
+│  ├── open_asn_to_cidr()                                             │
+│  │     tools: whois -h whois.radb.net, asnmap                       │
+│  │     in   : open/asns/unique_asns.txt                             │
+│  │     out  : open/cidrs/cidrs_from_asns.txt                        │
+│  │            open/cidrs/cidrs_from_asnmap.txt                      │
+│  │            open/cidrs/unique_cidrs.txt    ← consolidated         │
+│  │                                                                  │
+│  Phase 3 — IP Expansion & Reverse DNS                               │
+│  ├── open_ip_expansion()                                            │
+│  │     tools: dnsx, zdns, mapcidr, Shodan API (reverse-IP)          │
+│  │     in   : open/TLD/<base>_TLD.txt                               │
+│  │            open/cidrs/unique_cidrs.txt                           │
+│  │     out  : open/ips/ips_from_tlds.txt                            │
+│  │            open/ips/ips_zdns.txt                                 │
+│  │            open/ips/ips_from_cidrs.txt                           │
+│  │            open/ips/unique_ips.txt        ← consolidated         │
+│  │            open/subdomains/subdomains_rdns.txt                   │
+│  │            open/subdomains/subdomains_shodan_rdns.txt            │
+│  │            open/asns/asns_shodan.txt (appended)                  │
+│  │                                                                  │
+│  Phase 4 — Virtual Host Fuzzing                                     │
+│  ├── open_vhost_fuzz()                                              │
+│  │     tool : ffuf (per TLD domain, new tmux window each)           │
+│  │     in   : open/TLD/<base>_TLD.txt                               │
+│  │            VHOST_WORDLIST (SecLists or fuzz_wordlist)            │
+│  │     out  : open/vhosts/vhosts_ffuf.txt                           │
+│  │                                                                  │
+│  Phase 5 — Cloud Assets                                             │
+│  ├── open_cloud_enum()                                              │
+│  │     tools: cloud_enum, s3scanner                                 │
+│  │     in   : base domain keyword                                   │
+│  │     out  : open/cloud/cloud_enum_results.txt                     │
+│  │            open/cloud/s3_buckets.txt                             │
+│  │                                                                  │
+│  Phase 6 — Consolidate → feed into Wilde                            │
+│  └── open_consolidate()                                             │
+│        in   : all open/* files                                      │
+│        out  : subdomains/subdomains.txt  ◄─── SEEDED FOR WILDE      │
+│               open/summary.txt                                      │
+│               Discord notification                                  │
+└─────────────────────────────────────────────────────────────────────┘
+    │
+    │  passes: subdomains/subdomains.txt (pre-seeded)
+    │          open/TLD/<base>_TLD.txt   (all discovered domains)
+    ▼
+--mode wilde (-W)
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  WILDE MODE  (wilde_recon.sh → wilde_mode())                        │
+│                                                                     │
+│  INPUT: domain + subdomains/subdomains.txt (pre-seeded by open)     │
+│                                                                     │
+│  Parallel Group 1 (3 tools simultaneously)                          │
+│  ├── sub_passive()      → subfinder -all -recursive                 │
+│  ├── sub_crt()          → crt.sh (%25, %25.%25, %25.%25.%25)        │
+│  └── sub_virustotal()   → VirusTotal API v2 (VT_API_KEY)            │
+│        out: .tmp/subdomains_*.txt  → appended → subdomains.txt      │
+│                                                                     │
+│  Parallel Group 2 (3 tools simultaneously)                          │
+│  ├── sub_subenum()      → subenum -u wayback,crt,abuseipdb,...      │
+│  ├── sub_findomain()    → findomain -t                              │
+│  └── sub_assetfinder()  → assetfinder --subs-only                  │
+│        out: .tmp/subdomains_*.txt  → appended → subdomains.txt      │
+│                                                                     │
+│  Parallel Group 3 (3 tools simultaneously)                          │
+│  ├── sub_sublist3r()    → sublist3r -d                              │
+│  ├── sub_shodan_cli()   → shodan search hostname:TARGET             │
+│  └── sub_chaos()        → chaos -d (CHAOS_API_KEY)                  │
+│        out: .tmp/subdomains_*.txt  → appended → subdomains.txt      │
+│                                                                     │
+│  Parallel Group 4 (3 tools simultaneously)                          │
+│  ├── sub_securitytrails() → SecurityTrails API (SECURITYTRAILS_KEY) │
+│  ├── sub_urlscan()      → URLScan.io API search                     │
+│  └── sub_github_subdomains() → github-subdomains (GITHUB_TOKEN)    │
+│        out: .tmp/subdomains_*.txt  → appended → subdomains.txt      │
+│                                                                     │
+│  Parallel Group 5 (3 tools simultaneously)                          │
+│  ├── sub_gitlab_subdomains() → gitlab-subdomains (GITLAB_TOKEN)    │
+│  ├── sub_shuffledns()   → shuffledns -w subs_wordlist               │
+│  └── sub_analytics()   → Google Analytics ID enumeration            │
+│        out: .tmp/subdomains_*.txt  → appended → subdomains.txt      │
+│                                                                     │
+│  Sequential Group 6                                                 │
+│  ├── sub_active()       → resolve + filter with dnsx/puredns        │
+│  ├── sub_dns()          → DNS record enumeration (A/AAAA/CNAME/MX)  │
+│  ├── sub_permut()       → gotator permutations                      │
+│  └── sub_brute()        → puredns/dnsx brute-force                  │
+│        out: subdomains/subdomains.txt (final deduplicated list)      │
+│                                                                     │
+│  Post-enum (parallel-capable)                                       │
+│  ├── sub_fuzz_tmux()    → ffuf FUZZ.domain (new tmux window)        │
+│  │     in : subs_wordlist_big, out: .tmp/subdomains_ffuf.txt        │
+│  │                                                                  │
+│  ├── httpx live check                                               │
+│  │     in : subdomains/subdomains.txt                               │
+│  │     out: webs/webs_all.txt          ◄─── SEEDED FOR URL MODE     │
+│  │                                                                  │
+│  ├── save_subdomains_to_scanner()                                   │
+│  │     out: scanner/all_subdomains.csv                              │
+│  │          scanner/subdomains_chunk_00..N  (500-line CSV chunks)   │
+│  │          scanner/subdomains_with_target.csv  (domain,subdomain)  │
+│  │                                                                  │
+│  ├── wilde_ip_portscan()                                            │
+│  │     tools: dnsx (subs→IPs), naabu (port scan), dnsx (PTR)        │
+│  │     in : subdomains/subdomains.txt                               │
+│  │     out: hosts/ips_from_subdomains.txt                           │
+│  │          hosts/open_ports_naabu.txt                              │
+│  │          subdomains/subdomains.txt (new from reverse DNS)        │
+│  │                                                                  │
+│  ├── wilde_nuclei_scan()                                            │
+│  │     tool: nuclei -severity medium,high,critical (new tmux window)│
+│  │     in : webs/webs_all.txt                                       │
+│  │     out: nuclei_output/results.txt                               │
+│  │                                                                  │
+│  ├── wilde_takeover_check()                                         │
+│  │     tool: nuclei takeover templates                              │
+│  │     in : webs/webs_all.txt                                       │
+│  │     out: vulns/takeovers.txt                                     │
+│  │                                                                  │
+│  ├── iishortname()      → IIS short filename enumeration            │
+│  ├── add_to_monitor_queue() → appends target to .monitor_queue      │
+│  └── discord_notify()   → sends summary to DISCORD_WEBHOOK          │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+    │
+    │  passes: webs/webs_all.txt  (live HTTP targets)
+    │          subdomains/subdomains.txt
+    ▼
+--mode url (-U)
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  URL MODE  (wilde_recon.sh → url_mode())                            │
+│                                                                     │
+│  INPUT: webs/webs_all.txt (from wilde) OR httpx of subdomains.txt   │
+│                                                                     │
+│  Parallel Group 1 (2 tools simultaneously)                          │
+│  ├── _url_gau()         → gau --subs (passive archive)              │
+│  │     out: urls/urls_gau.txt                                       │
+│  └── _url_waymore()     → waymore -mode U (passive multi-source)    │
+│        out: urls/urls_waymore.txt                                   │
+│                                                                     │
+│  Parallel Group 2 (2 tools simultaneously)                          │
+│  ├── _url_katana()      → katana -js-crawl -depth 3 (active)        │
+│  │     in : webs/webs_all.txt                                       │
+│  │     out: urls/urls_katana.txt                                    │
+│  └── _url_gospider()    → gospider -d 2 -t 50 (active)              │
+│        in : webs/webs_all.txt                                       │
+│        out: urls/urls_gospider.txt                                  │
+│                                                                     │
+│  Parallel Group 3 (2 tools simultaneously)                          │
+│  ├── _url_paramspider() → paramspider (parameter discovery)         │
+│  │     out: params/paramspider.txt, urls/urls_paramspider.txt       │
+│  └── _url_urlscan()     → URLScan.io API (page URLs)                │
+│        out: urls/urls_urlscan.txt                                   │
+│                                                                     │
+│  Post-collection                                                    │
+│  ├── combine + dedup                                                │
+│  │     in : urls/urls_*.txt                                         │
+│  │     out: urls/all_urls.txt                                       │
+│  │                                                                  │
+│  ├── httpx live filter                                              │
+│  │     out: urls/live_urls.txt                                      │
+│  │                                                                  │
+│  ├── _split_urls_by_ext()  → splits live URLs by type               │
+│  │     out: urls/urls_js.txt       ← JavaScript files               │
+│  │          urls/urls_dynamic.txt  ← .php/.asp/.jsp                 │
+│  │          urls/urls_data.txt     ← .json/.xml/.yaml               │
+│  │          urls/urls_docs.txt     ← .pdf/.doc/.xls                 │
+│  │          urls/urls_params.txt   ← URLs with ?param=              │
+│  │                                                                  │
+│  ├── url_gf()            → GF pattern matching on all_urls.txt      │
+│  │     out: vulns/xss.txt, vulns/sqli.txt, vulns/ssrf.txt, ...      │
+│  │                                                                  │
+│  ├── jschecks()          → JS secret & endpoint extraction          │
+│  │     in : urls/urls_js.txt                                        │
+│  │     out: osint/js_secrets.txt, subdomains/ (new from JS)         │
+│  │                                                                  │
+│  └── save to scanner/                                               │
+│        out: scanner/urls_chunk_00..N  (500-line CSV chunks)         │
+│             scanner/urls_with_target.csv  (domain,url)              │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 📂 Output Folder Structure (per target)
+
+Every scan creates `Recon/<target>/` with this layout:
+
+```
+Recon/
+└── target.com/
+    │
+    ├── open/                        # Open mode artifacts
+    │   ├── TLD/
+    │   │   └── target_TLD.txt       # All related TLDs/domains discovered
+    │   ├── asns/
+    │   │   ├── asns_asnmap.txt
+    │   │   ├── asns_shodan.txt
+    │   │   └── unique_asns.txt      ← input to CIDR phase
+    │   ├── cidrs/
+    │   │   ├── cidrs_from_asns.txt
+    │   │   ├── cidrs_from_asnmap.txt
+    │   │   └── unique_cidrs.txt     ← input to IP expansion
+    │   ├── ips/
+    │   │   ├── ips_from_tlds.txt
+    │   │   ├── ips_zdns.txt
+    │   │   ├── ips_shodan.txt
+    │   │   ├── ips_from_cidrs.txt
+    │   │   └── unique_ips.txt       ← input to reverse DNS & Shodan
+    │   ├── vhosts/
+    │   │   └── vhosts_ffuf.txt      # Virtual hosts discovered
+    │   ├── ports/
+    │   │   └── shodan_ports.txt
+    │   ├── cloud/
+    │   │   ├── cloud_enum_results.txt
+    │   │   └── s3_buckets.txt
+    │   ├── subdomains/              # Subdomains from open-mode only
+    │   │   ├── subdomains_rdns.txt
+    │   │   └── subdomains_shodan_rdns.txt
+    │   ├── whois_target.com.txt
+    │   └── summary.txt              # Open mode summary + counts
+    │
+    ├── subdomains/                  # Wilde mode: all subdomain results
+    │   ├── subdomains_subfinder.txt
+    │   ├── subdomains_crtsh.txt
+    │   ├── subdomains_virustotal.txt
+    │   ├── subdomains_findomain.txt
+    │   ├── subdomains_assetfinder.txt
+    │   ├── subdomains_sublist3r.txt
+    │   ├── subdomains_shodan.txt
+    │   ├── subdomains_chaos.txt
+    │   ├── subdomains_securitytrails.txt
+    │   ├── subdomains_urlscan.txt
+    │   ├── subdomains_github.txt
+    │   ├── subdomains_gitlab.txt
+    │   ├── subdomains_shuffledns.txt
+    │   └── subdomains.txt           ← master deduplicated list
+    │
+    ├── webs/
+    │   ├── webs_all.txt             ← live HTTP/S targets (httpx output)
+    │   └── webs_uncommon_ports.txt
+    │
+    ├── hosts/
+    │   ├── ips_from_subdomains.txt  # IPs resolved from subdomains
+    │   └── open_ports_naabu.txt     # Open ports from naabu
+    │
+    ├── urls/
+    │   ├── urls_gau.txt
+    │   ├── urls_waymore.txt
+    │   ├── urls_katana.txt
+    │   ├── urls_gospider.txt
+    │   ├── urls_paramspider.txt
+    │   ├── urls_urlscan.txt
+    │   ├── all_urls.txt             ← combined deduplicated
+    │   ├── live_urls.txt            ← httpx-filtered live URLs
+    │   ├── urls_js.txt              ← .js files only
+    │   ├── urls_dynamic.txt         ← .php/.asp/.jsp
+    │   ├── urls_data.txt            ← .json/.xml/.yaml
+    │   ├── urls_docs.txt            ← .pdf/.doc/.xls
+    │   └── urls_params.txt          ← URLs with parameters
+    │
+    ├── params/
+    │   └── paramspider.txt
+    │
+    ├── scanner/                     # Ready-to-use chunked files
+    │   ├── all_subdomains.csv           # All subdomains, one per line
+    │   ├── subdomains_with_target.csv   # domain,subdomain format
+    │   ├── subdomains_chunk_00          # 500-line chunks for parallel tools
+    │   ├── subdomains_chunk_01
+    │   ├── ...
+    │   ├── urls_with_target.csv         # domain,url format
+    │   ├── urls_chunk_00                # 500-line URL chunks
+    │   └── urls_chunk_01
+    │
+    ├── vulns/
+    │   ├── takeovers.txt
+    │   ├── xss.txt
+    │   ├── sqli.txt
+    │   └── ssrf.txt
+    │
+    ├── nuclei_output/
+    │   ├── results.txt
+    │   ├── critical.txt
+    │   ├── high.txt
+    │   └── medium.txt
+    │
+    ├── osint/
+    │   ├── js_secrets.txt
+    │   └── ...
+    │
+    ├── screenshots/
+    ├── .tmp/                        # Intermediate tool outputs (may be removed)
+    ├── .log/                        # Per-run timestamped logs
+    └── .called_fn/                  # Module completion markers (for resume)
+```
+
+---
+
+### 📦 Module Reference
 
 | Module | Lines | Purpose |
 |--------|------:|---------|
-| `core.sh` | 1024 | Lifecycle management, logging, notifications, cleanup traps |
-| `modes.sh` | 902 | Scan mode definitions, argument parsing, help output |
-| `subdomains.sh` | 1938 | All subdomain enumeration functions |
-| `web.sh` | 1712 | Web analysis, fuzzing, JS analysis, CMS detection |
-| `vulns.sh` | 926 | Vulnerability scanning (XSS, SQLi, SSRF, etc.) |
-| `osint.sh` | 500 | OSINT functions (WHOIS, emails, dorks, metadata) |
-| `utils.sh` | 508 | Shared utilities, input sanitization, validation |
-| `axiom.sh` | 143 | Axiom/Ax distributed fleet management |
+| `core.sh` | 2284 | Lifecycle, structured logging (JSONL), reporting, notifications |
+| `modes.sh` | 1499 | Scan mode orchestration: recon/passive/osint/all/zen/multi |
+| `subdomains.sh` | 2404 | Original reconftw subdomain functions (subfinder, crt, brute, etc.) |
+| `web.sh` | 2726 | Web probing, crawling, JS analysis, fuzzing, screenshots, CMS |
+| `vulns.sh` | 988 | Vuln scanning: XSS, SQLi, SSRF, LFI, SSTI, CRLF, smuggling |
+| `osint.sh` | 705 | OSINT: dorks, emails, metadata, cloud enum, secrets, DMARC |
+| `utils.sh` | 1409 | Sanitization, validation, perf profiles, retry, rate limiting |
+| `axiom.sh` | 240 | Axiom/Ax distributed fleet management |
+| `wilde_recon.sh` | 762 | Y-Recon: Wilde mode (15+ tools) + URL mode pipeline |
+| `open_recon.sh` | 355 | Y-Recon: Open mode horizontal recon (TLD→ASN→CIDR→IP→vhost) |
 
-The `--source-only` flag allows sourcing `reconftw.sh` without executing the main logic, enabling unit testing of individual functions.
+The `--source-only` flag allows sourcing `reconftw.sh` without executing main logic, enabling unit testing of individual functions.
 
 ---
 
