@@ -60,33 +60,75 @@ function open_asn_enum() {
     local base_domain
     base_domain=$(echo "$domain" | awk -F'.' '{if (NF>=2) print $(NF-1)"."$NF; else print $0}')
 
+    # --- Method 1: asnmap with -json output (correctly extracts AS numbers) ---
     if command -v asnmap >/dev/null 2>&1 && [[ -s "${dir}/open/TLD/${base_domain}_TLD.txt" ]]; then
-        notification "Running asnmap for ASN discovery" info
+        notification "Running asnmap -json for ASN discovery" info
         while IFS= read -r d; do
             [[ -z "$d" ]] && continue
-            asnmap -d "$d" 2>/dev/null | grep -Eo 'AS[0-9]+' >> "${dir}/open/asns/asns_asnmap.txt" || true
+            # asnmap -json gives: {"as_number":"12345","as_name":"...","as_country":"...","as_range":"..."}
+            asnmap -d "$d" -json 2>/dev/null \
+                | jq -r '.as_number? // empty' 2>/dev/null \
+                | grep -Eo '[0-9]+' \
+                | sed 's/^/AS/' \
+                >> "${dir}/open/asns/asns_asnmap.txt" || true
         done < "${dir}/open/TLD/${base_domain}_TLD.txt"
-        sort -u -o "${dir}/open/asns/asns_asnmap.txt" "${dir}/open/asns/asns_asnmap.txt"
+        sort -u -o "${dir}/open/asns/asns_asnmap.txt" "${dir}/open/asns/asns_asnmap.txt" 2>/dev/null || true
     fi
 
-    # Also query via SHODAN API
+    # --- Method 2: Resolve domain → IP → whois for ASN (works without API keys) ---
+    if command -v whois >/dev/null 2>&1 && [[ -s "${dir}/open/TLD/${base_domain}_TLD.txt" ]]; then
+        notification "Resolving IPs and extracting ASNs via whois" info
+        while IFS= read -r d; do
+            [[ -z "$d" ]] && continue
+            # Resolve domain to IP
+            local ip
+            ip=$(dig +short "$d" A 2>/dev/null | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            [[ -z "$ip" ]] && continue
+            # Save the IP
+            echo "$ip" >> "${dir}/open/ips/ips_from_tlds.txt"
+            # Get ASN from whois
+            whois "$ip" 2>/dev/null \
+                | grep -iE "^origin|^OriginAS|^origin-as" \
+                | grep -Eo 'AS[0-9]+' \
+                >> "${dir}/open/asns/asns_whois.txt" || true
+        done < "${dir}/open/TLD/${base_domain}_TLD.txt"
+        sort -u -o "${dir}/open/asns/asns_whois.txt" "${dir}/open/asns/asns_whois.txt" 2>/dev/null || true
+        sort -u -o "${dir}/open/ips/ips_from_tlds.txt" "${dir}/open/ips/ips_from_tlds.txt" 2>/dev/null || true
+    fi
+
+    # --- Method 3: hackertarget.com free ASN API (no key needed) ---
+    if [[ -s "${dir}/open/ips/ips_from_tlds.txt" ]]; then
+        notification "Querying hackertarget ASN API for resolved IPs" info
+        while IFS= read -r ip; do
+            [[ -z "$ip" ]] && continue
+            # Response: "IP","AS12345","CIDR","Org Name"
+            local asn
+            asn=$(curl -s --max-time 5 "https://api.hackertarget.com/aslookup/?q=${ip}" 2>/dev/null \
+                | grep -Eo '"AS[0-9]+"' | tr -d '"')
+            [[ -n "$asn" ]] && echo "$asn" >> "${dir}/open/asns/asns_hackertarget.txt" || true
+        done < <(head -30 "${dir}/open/ips/ips_from_tlds.txt")  # cap at 30 to respect rate limit
+        sort -u -o "${dir}/open/asns/asns_hackertarget.txt" "${dir}/open/asns/asns_hackertarget.txt" 2>/dev/null || true
+    fi
+
+    # --- Method 4: Shodan API (if key is set) ---
     if [[ -n "${SHODAN_API_KEY:-}" ]] && [[ -s "${dir}/open/TLD/${base_domain}_TLD.txt" ]]; then
         notification "Querying Shodan API for ASNs/IPs" info
         while IFS= read -r d; do
             [[ -z "$d" ]] && continue
-            curl -s "https://api.shodan.io/shodan/host/search?key=${SHODAN_API_KEY}&query=hostname:${d}" 2>/dev/null \
-                | jq -r '.matches[].asn? // empty' 2>/dev/null >> "${dir}/open/asns/asns_shodan.txt" || true
-            curl -s "https://api.shodan.io/shodan/host/search?key=${SHODAN_API_KEY}&query=hostname:${d}" 2>/dev/null \
-                | jq -r '.matches[].ip_str? // empty' 2>/dev/null >> "${dir}/open/ips/ips_shodan.txt" || true
-            curl -s "https://api.shodan.io/shodan/host/search?key=${SHODAN_API_KEY}&query=hostname:${d}" 2>/dev/null \
-                | jq -r '.matches[] | "\(.ip_str):\(.port)"' 2>/dev/null >> "${dir}/open/ports/shodan_ports.txt" || true
+            local resp
+            resp=$(curl -s --max-time 10 "https://api.shodan.io/shodan/host/search?key=${SHODAN_API_KEY}&query=hostname:${d}" 2>/dev/null)
+            echo "$resp" | jq -r '.matches[].asn? // empty' 2>/dev/null >> "${dir}/open/asns/asns_shodan.txt" || true
+            echo "$resp" | jq -r '.matches[].ip_str? // empty' 2>/dev/null >> "${dir}/open/ips/ips_shodan.txt" || true
+            echo "$resp" | jq -r '.matches[] | "\(.ip_str):\(.port)"' 2>/dev/null >> "${dir}/open/ports/shodan_ports.txt" || true
         done < "${dir}/open/TLD/${base_domain}_TLD.txt"
         sort -u -o "${dir}/open/asns/asns_shodan.txt" "${dir}/open/asns/asns_shodan.txt" 2>/dev/null || true
         sort -u -o "${dir}/open/ips/ips_shodan.txt" "${dir}/open/ips/ips_shodan.txt" 2>/dev/null || true
     fi
 
-    # Consolidate ASNs
-    cat "${dir}/open/asns/"*.txt 2>/dev/null | grep -Eo 'AS[0-9]+' | sort -u > "${dir}/open/asns/unique_asns.txt" || true
+    # --- Consolidate: collect all AS#### from every source ---
+    cat "${dir}/open/asns/"*.txt 2>/dev/null \
+        | grep -Eo 'AS[0-9]+' \
+        | sort -u > "${dir}/open/asns/unique_asns.txt" || true
     local count
     count=$(wc -l < "${dir}/open/asns/unique_asns.txt" 2>/dev/null || echo 0)
     notification "ASN enumeration complete: ${count} ASNs found" good
@@ -199,63 +241,66 @@ function open_ip_expansion() {
 
 # Phase 6: Virtual Host Fuzzing (for domains with different IPs)
 function open_vhost_fuzz() {
-    start_func "${FUNCNAME[0]}" "Virtual Host Fuzzing"
-
+    # Launches ALL vhost fuzzing in ONE background tmux window ("vhost-fuzz").
+    # Returns immediately — does NOT block the main scan.
     if [[ "${OPEN_VHOST_FUZZ:-true}" != "true" ]]; then
         notification "Virtual host fuzzing disabled (OPEN_VHOST_FUZZ=false)" warn
-        end_func "" "${FUNCNAME[0]}"
         return
     fi
 
     local vhost_wl="${VHOST_WORDLIST:-${tools}/SecLists/Discovery/DNS/subdomains-top1million-5000.txt}"
-    if [[ ! -f "$vhost_wl" ]]; then
-        vhost_wl="${fuzz_wordlist:-${WORDLISTS_DIR}/fuzz_wordlist.txt}"
-    fi
+    [[ ! -f "$vhost_wl" ]] && vhost_wl="${fuzz_wordlist:-${WORDLISTS_DIR}/fuzz_wordlist.txt}"
 
     local base_domain
     base_domain=$(echo "$domain" | awk -F'.' '{if (NF>=2) print $(NF-1)"."$NF; else print $0}')
 
     if ! command -v ffuf >/dev/null 2>&1; then
         notification "ffuf not found, skipping vhost fuzzing" warn
-        end_func "" "${FUNCNAME[0]}"
         return
     fi
 
     if [[ ! -s "${dir}/open/TLD/${base_domain}_TLD.txt" ]]; then
         notification "No TLD domains found for vhost fuzzing" warn
-        end_func "" "${FUNCNAME[0]}"
         return
     fi
 
-    notification "Starting Virtual Host fuzzing on discovered domains" info
-    > "${dir}/open/vhosts/vhosts_ffuf.txt"
-
-    # Run vhost fuzzing in a new tmux window if available
     local tmux_session
     tmux_session=$(tmux display-message -p '#S' 2>/dev/null || echo "")
 
-    while IFS= read -r tld_domain; do
-        [[ -z "$tld_domain" ]] && continue
-        local window_name="vhost-${tld_domain//\./-}"
-        local ffuf_cmd="ffuf -w '${vhost_wl}' -u 'https://${tld_domain}' -H 'Host: FUZZ.${tld_domain}' -fs 0 -o '/tmp/vhosts_temp_${tld_domain}.json' -of json -noninteractive -silent && jq -r '.results[].input.Host' '/tmp/vhosts_temp_${tld_domain}.json' >> '${dir}/open/vhosts/vhosts_ffuf.txt' 2>/dev/null || true"
+    if [[ -z "$tmux_session" ]] || ! command -v tmux >/dev/null 2>&1; then
+        notification "tmux not available — vhost fuzzing skipped (run inside tmux)" warn
+        return
+    fi
 
-        if [[ -n "$tmux_session" ]] && command -v tmux >/dev/null 2>&1; then
-            tmux new-window -t "${tmux_session}" -n "${window_name}" 2>/dev/null || true
-            tmux send-keys -t "${tmux_session}:${window_name}" "$ffuf_cmd" C-m 2>/dev/null || true
-        else
-            # Run inline (sequential)
-            ffuf -w "${vhost_wl}" -u "https://${tld_domain}" -H "Host: FUZZ.${tld_domain}" \
-                -fs 0 -o "/tmp/vhosts_temp_${tld_domain}.json" -of json -noninteractive -silent 2>/dev/null || true
-            jq -r '.results[].input.Host' "/tmp/vhosts_temp_${tld_domain}.json" 2>/dev/null \
-                >> "${dir}/open/vhosts/vhosts_ffuf.txt" || true
-        fi
-    done < "${dir}/open/TLD/${base_domain}_TLD.txt"
+    # Build a single shell script that iterates all TLD domains sequentially
+    local vhost_script="/tmp/vhost_fuzz_${base_domain//[^a-zA-Z0-9_]/_}.sh"
+    local vhost_out="${dir}/open/vhosts/vhosts_ffuf.txt"
+    > "$vhost_out"
 
-    sort -u -o "${dir}/open/vhosts/vhosts_ffuf.txt" "${dir}/open/vhosts/vhosts_ffuf.txt" 2>/dev/null || true
-    local count
-    count=$(wc -l < "${dir}/open/vhosts/vhosts_ffuf.txt" 2>/dev/null || echo 0)
-    notification "Virtual host fuzzing complete: ${count} vhosts found" good
-    end_func "${dir}/open/vhosts/vhosts_ffuf.txt" "${FUNCNAME[0]}"
+    {
+        echo "#!/usr/bin/env bash"
+        echo "set -euo pipefail"
+        echo "vhost_out='${vhost_out}'"
+        echo "vhost_wl='${vhost_wl}'"
+        echo "while IFS= read -r d; do"
+        echo "  [[ -z \"\$d\" ]] && continue"
+        echo "  tmp=\"/tmp/vhosts_\${d//[^a-zA-Z0-9_]/_}.json\""
+        echo "  ffuf -w \"\$vhost_wl\" -u \"https://\${d}\" -H \"Host: FUZZ.\${d}\" \\"
+        echo "       -fs 0 -o \"\$tmp\" -of json -noninteractive -silent 2>/dev/null || true"
+        echo "  jq -r '.results[].input.Host' \"\$tmp\" 2>/dev/null >> \"\$vhost_out\" || true"
+        echo "  rm -f \"\$tmp\""
+        echo "done < '${dir}/open/TLD/${base_domain}_TLD.txt'"
+        echo "sort -u -o \"\$vhost_out\" \"\$vhost_out\" 2>/dev/null || true"
+        echo "echo \"[vhost-fuzz] done: \$(wc -l < \"\$vhost_out\") vhosts found\""
+    } > "$vhost_script"
+    chmod +x "$vhost_script"
+
+    # Open ONE new tmux window and run the script there (fire-and-forget)
+    local window_name="vhost-fuzz"
+    tmux new-window -t "${tmux_session}" -n "${window_name}" 2>/dev/null || true
+    tmux send-keys -t "${tmux_session}:${window_name}" "bash '${vhost_script}'" C-m 2>/dev/null || true
+
+    notification "Virtual host fuzzing launched in tmux window '${window_name}' (background — all ${base_domain} TLDs)" info
 }
 
 # Phase 7: Cloud asset enumeration
@@ -274,6 +319,8 @@ function open_cloud_enum() {
         else
             cloud_cmd="python3 ${tools}/cloud_enum/cloud_enum.py"
         fi
+        # --qs (quickscan) skips the large mutations fuzz.txt that may be missing
+        $cloud_cmd -k "$base_domain" --qs -l "${dir}/open/cloud/cloud_enum_results.txt" 2>/dev/null || \
         $cloud_cmd -k "$base_domain" -l "${dir}/open/cloud/cloud_enum_results.txt" 2>/dev/null || true
         notification "cloud_enum complete" good
     fi
@@ -342,7 +389,7 @@ function open_recon_mode() {
     open_asn_to_cidr
     notification "Phase 3: IP Expansion & Reverse DNS" info
     open_ip_expansion
-    notification "Phase 4: Virtual Host Fuzzing" info
+    notification "Phase 4: Virtual Host Fuzzing (background tmux window)" info
     open_vhost_fuzz
     notification "Phase 5: Cloud Asset Enumeration" info
     open_cloud_enum

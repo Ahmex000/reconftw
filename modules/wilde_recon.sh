@@ -504,17 +504,60 @@ function wilde_mode() {
         sub_gitlab_subdomains; sub_shuffledns; sub_analytics
     fi
 
-    # Additional tools from original reconftw
-    notification "Subdomain Enum - Group 6: amass/active DNS/TLS" info
+    # Sequential Group 6: active resolution, DNS records, permutations
+    notification "Subdomain Enum - Group 6: active DNS, permutations" info
     sub_active
     sub_dns
     if [[ "${SUBPERMUTE:-true}" == "true" ]]; then sub_permut; fi
-    if [[ "${SUBBRUTE:-true}" == "true" ]]; then sub_brute; fi
 
-    # Start subdomain fuzzing in separate tmux window
-    sub_fuzz_tmux
+    # DNS brute-force: runs in a new tmux window; script WAITS for it to finish
+    # before proceeding. This lets you use the terminal freely while it runs.
+    if [[ "${SUBBRUTE:-true}" == "true" ]]; then
+        local _brute_sentinel
+        _brute_sentinel="/tmp/.reconftw_brute_done_${domain//[^a-zA-Z0-9_]/_}"
+        rm -f "$_brute_sentinel"
 
-    # Filter live subdomains
+        local _brute_window="brute-${domain//\./-}"
+        local _brute_log="${dir}/.log/brute_force.log"
+
+        # Build the brute-force command: original sub_brute logic wrapped with sentinel
+        # We call the actual sub_brute function body then touch the sentinel
+        local _brute_cmd
+        _brute_cmd="cd '${dir}' && bash -c 'source ${SCRIPTPATH}/reconftw.cfg; source ${SCRIPTPATH}/lib/common.sh; source ${SCRIPTPATH}/lib/ui.sh; source ${SCRIPTPATH}/lib/validation.sh; source ${SCRIPTPATH}/modules/utils.sh; source ${SCRIPTPATH}/modules/core.sh; source ${SCRIPTPATH}/modules/subdomains.sh; domain=${domain}; dir=${dir}; resolvers=${resolvers}; resolvers_trusted=${resolvers_trusted}; subs_wordlist=${subs_wordlist}; called_fn_dir=${called_fn_dir}; LOGFILE=${LOGFILE}; sub_brute' 2>&1 | tee '${_brute_log}'; touch '${_brute_sentinel}'"
+
+        if command -v tmux >/dev/null 2>&1; then
+            local _tmux_session
+            _tmux_session=$(tmux display-message -p '#S' 2>/dev/null || echo "")
+            if [[ -n "$_tmux_session" ]]; then
+                tmux new-window -t "${_tmux_session}" -n "${_brute_window}" 2>/dev/null \
+                    || tmux new-window -n "${_brute_window}" 2>/dev/null || true
+                tmux send-keys -t "${_tmux_session}:${_brute_window}" "$_brute_cmd" C-m 2>/dev/null || true
+                notification "DNS brute-force started in tmux window '${_brute_window}' — waiting for it to finish..." info
+            else
+                # No active session — run inline
+                sub_brute
+                touch "$_brute_sentinel"
+            fi
+        else
+            # No tmux — run inline
+            sub_brute
+            touch "$_brute_sentinel"
+        fi
+
+        # Block here until brute-force window is done (sentinel file appears)
+        local _wait_secs=0
+        while [[ ! -f "$_brute_sentinel" ]]; do
+            sleep 15
+            _wait_secs=$((_wait_secs + 15))
+            if ((_wait_secs % 120 == 0)); then
+                notification "Still waiting for DNS brute-force... (${_wait_secs}s elapsed)" info
+            fi
+        done
+        rm -f "$_brute_sentinel"
+        notification "DNS brute-force complete" good
+    fi
+
+    # Filter live subdomains — only after ALL enum (including brute) is done
     notification "Checking live subdomains with httpx" info
     if command -v httpx >/dev/null 2>&1 && [[ -s "${dir}/subdomains/subdomains.txt" ]]; then
         httpx -l "${dir}/subdomains/subdomains.txt" -silent -threads "${HTTPX_THREADS:-50}" \
@@ -531,7 +574,7 @@ function wilde_mode() {
     # IP port scanning
     wilde_ip_portscan
 
-    # Nuclei scan
+    # Nuclei scan (fires in tmux, does NOT block)
     wilde_nuclei_scan
 
     # Subdomain takeover check
@@ -552,7 +595,7 @@ function wilde_mode() {
 
     notification "Wilde Mode Complete: ${end_count} subdomains (${new_count} new)" good
 
-    # Automatically proceed to URL collection after subdomain enum
+    # Proceed to URL collection only after ALL wilde steps (including brute) are done
     notification "Wilde Mode: proceeding to URL collection" info
     url_mode
 }
